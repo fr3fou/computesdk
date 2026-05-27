@@ -5,6 +5,14 @@ export const DEFAULT_SERVICE_PREFIX = 'computesdk-';
 export const DEFAULT_DEPLOYMENT_PLAN = 'nf-compute-50';
 export const DEFAULT_TIMEOUT_MS = 120_000;
 
+export function debug(event: string, data?: Record<string, unknown>): void {
+  if (process.env.COMPUTESDK_DEBUG) {
+    console.error(
+      `[northflank] ${new Date().toISOString()} ${event}`,
+      data ? JSON.stringify(data) : '',
+    );
+  }
+}
 
 /**
  * Any runtime label the caller wants — defaults to "node". `RUNTIME_IMAGES`
@@ -173,11 +181,18 @@ export async function withExecRetry<T>(
 ): Promise<T> {
   const { serviceId, timeoutMs, pollIntervalMs = 50 } = opts;
   const start = Date.now();
+  let attemptNum = 0;
 
   while (Date.now() - start < timeoutMs) {
+    attemptNum++;
+    debug('exec.retry.attempt', { attempt: attemptNum, serviceId });
     try {
-      return await attempt();
+      const result = await attempt();
+      debug('exec.retry.success', { attempt: attemptNum, serviceId, elapsedMs: Date.now() - start });
+      return result;
     } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      debug('exec.retry.error', { attempt: attemptNum, serviceId, error: msg, status: extractStatus(error) });
       if (
         is404(error) ||
         isAuthError(error) ||
@@ -189,5 +204,6 @@ export async function withExecRetry<T>(
     }
     await new Promise(r => setTimeout(r, pollIntervalMs));
   }
+  debug('exec.retry.timeout', { serviceId, attempts: attemptNum });
   throw new Error(`Timeout running exec on service ${serviceId} after ${timeoutMs}ms`);
 }

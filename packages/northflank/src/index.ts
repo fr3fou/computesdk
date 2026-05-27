@@ -17,6 +17,7 @@ import {
   DEFAULT_DEPLOYMENT_PLAN,
   DEFAULT_KEEP_ALIVE_COMMAND,
   DEFAULT_TIMEOUT_MS,
+  debug,
   type Runtime,
   type NorthflankProtocol,
   type NorthflankPort,
@@ -153,7 +154,15 @@ const createNorthflankProvider = defineProvider<NorthflankSandboxHandle, Northfl
         const ports = portsInput?.map(normalizePort);
         const timeout = opts.timeout ?? config.timeout ?? DEFAULT_TIMEOUT_MS;
         const serviceName = generateServiceName(p, opts.name);
+        const createStart = Date.now();
         const plan = opts.deploymentPlan ?? config.deploymentPlan ?? DEFAULT_DEPLOYMENT_PLAN;
+        debug('create.start', {
+          serviceName,
+          runtime,
+          internal: !!internalDeployment,
+          ports: ports?.length ?? 0,
+          plan,
+        });
 
         const deployment: Record<string, unknown> = {
           instances: 1,
@@ -192,6 +201,7 @@ const createNorthflankProvider = defineProvider<NorthflankSandboxHandle, Northfl
           data,
         });
         const serviceId = created.data.id;
+        debug('create.done', { serviceId, elapsedMs: Date.now() - createStart });
         return {
           sandbox: {
             serviceId,
@@ -276,6 +286,8 @@ const createNorthflankProvider = defineProvider<NorthflankSandboxHandle, Northfl
       destroy: async (config: NorthflankConfig, sandboxId: string) => {
         const client = buildClient(config);
         const params = serviceParams(config, sandboxId);
+        const destroyStart = Date.now();
+        debug('destroy.start', { serviceId: sandboxId });
 
         try {
           const serviceRes = await client.get.service({ parameters: params });
@@ -283,8 +295,10 @@ const createNorthflankProvider = defineProvider<NorthflankSandboxHandle, Northfl
             throw new Error(`Service ${sandboxId} is not managed by ComputeSDK`);
           }
           await client.delete.service({ parameters: params });
+          debug('destroy.done', { serviceId: sandboxId, elapsedMs: Date.now() - destroyStart });
         } catch (error) {
           if (is404(error)) {
+            debug('destroy.done', { serviceId: sandboxId, elapsedMs: Date.now() - destroyStart, alreadyGone: true });
             return;
           }
           throw error;
@@ -297,9 +311,16 @@ const createNorthflankProvider = defineProvider<NorthflankSandboxHandle, Northfl
         options?: RunCommandOptions,
       ): Promise<CommandResult> => {
         const start = Date.now();
+        debug('exec.start', { serviceId: sandbox.serviceId, command: command.slice(0, 100) });
         try {
           const fullCommand = withCommandOptions(command, options);
           const result = await execCommand(sandbox, fullCommand);
+          debug('exec.done', {
+            serviceId: sandbox.serviceId,
+            exitCode: result.exitCode,
+            elapsedMs: Date.now() - start,
+            stdoutBytes: result.stdout.length,
+          });
           return {
             stdout: result.stdout,
             stderr: result.stderr,
@@ -307,6 +328,11 @@ const createNorthflankProvider = defineProvider<NorthflankSandboxHandle, Northfl
             durationMs: Date.now() - start,
           };
         } catch (error) {
+          debug('exec.error', {
+            serviceId: sandbox.serviceId,
+            elapsedMs: Date.now() - start,
+            error: error instanceof Error ? error.message : String(error),
+          });
           // Fatal errors (auth, not-found, malformed request) should propagate
           // so the caller can see them — not be masked as a command failure.
           if (is404(error) || isAuthError(error) || isPermanentClientError(error)) throw error;
